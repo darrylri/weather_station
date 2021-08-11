@@ -1,28 +1,31 @@
-import sys
+import os, sys, time
+import requests, socket
 from math import sin
-import time
 from datetime import datetime
-import socket
-import requests
 import MQTT
-import Display
 import BME280
 import Rain
 import Wind
 
-# Display globals
-display = Display.Display()
-my_font = display.font24
-line_spacing = 26
+# TODO: add support for 1602 LCD
+DISPLAY_ENABLED = False
+WUNDERGROUND_ENABLED = False
+
+if DISPLAY_ENABLED:
+    import Display
+    # Display globals
+    display = Display.Display()
+    my_font = display.font24
+    line_spacing = 26
 
 # MQTT clients
-station_name = 'CastleWeather'
-ws_location = '37.014835,-121.979731'
-topic_data = 'weather/data'
-mqtt_data = MQTT.MQTTClient(station_name, ws_location, topic_data, '192.168.0.105', 1883)
-topic_status = 'weather/status'
-mqtt_status = MQTT.MQTTClient(station_name+'_Status', ws_location, topic_status, '192.168.0.105', 1883)
-
+station_name = os.environ.get('WEATHERSTATION_NAME', 'CastleWeather')
+ws_location = os.environ.get('WEATHERSTATION_LOCATION', '37.014835,-121.979731')
+mq_host = os.environ.get('WEATHERSTATION_MQ_HOST', '192.168.0.105')
+topic_data = os.environ.get('WEATHERSTATION_TOPIC_DATA', 'weather/data')
+mqtt_data = MQTT.MQTTClient(station_name, ws_location, topic_data, mq_host, 1883)
+topic_status = os.environ.get('WEATHERSTATION_TOPIC_STATUS', 'weather/status')
+mqtt_status = MQTT.MQTTClient(station_name+'_Status', ws_location, topic_status, mq_host, 1883)
 
 # Retreives our IP address
 ip_host = ''
@@ -168,7 +171,7 @@ def get_payload_value(payload, source, conversion):
 
 def send_wunderground_data(payload):
     WUurl = "https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?"
-    WU_creds = 'ID=XXXXXXXXXXXX&PASSWORD=XXXXXXXX'
+    WU_creds = os.environ.get('WEATHERSTATION_WUNDERGROUND_CREDS', 'ID=XXXXXXXXXXXX&PASSWORD=XXXXXXXX')
     date_str = "&dateutc=now"
     action_str = "&action=updateraw"
 
@@ -200,7 +203,8 @@ def send_wunderground_data(payload):
 
 host = get_ip()
 
-boot_message(display, ' Booting...')
+if DISPLAY_ENABLED:
+    boot_message(display, ' Booting...')
 publish_status({
     station_name: {
         'status': 'Bootstrap',
@@ -219,7 +223,8 @@ publish_status({
         'hostname': host
     }
 })
-boot_message(display, ' Online')
+if DISPLAY_ENABLED:
+    boot_message(display, ' Online')
 
 
 # Online
@@ -243,10 +248,12 @@ while True:
         speed = kmh_mph(float(payload['wind']['average']))
         gust = kmh_mph(float(payload['wind']['gust']))
         precip = float(payload['rain_day']['measurement'])
-        display_update(display, temp, hum, bp, wind, speed, gust, precip)
+        if DISPLAY_ENABLED:
+            display_update(display, temp, hum, bp, wind, speed, gust, precip)
 
     # Report to Weather Underground every 10 minutes
     if count % 60 == 0:
-        send_wunderground_data(payload)
+        if WUNDERGROUND_ENABLED:
+            send_wunderground_data(payload)
 
     count += 1
