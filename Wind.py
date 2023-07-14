@@ -1,9 +1,10 @@
-
 from gpiozero import Button
 from gpiozero import MCP3008
 import time
 import math
 import _thread
+
+KMH_TO_MPH = 0.621371
 
 class WindSpeed:
     def __init__(self):
@@ -18,8 +19,11 @@ class WindSpeed:
     def get_all_data(self):
         return {
             'speed': self.ispeed,
+            'speed_mph': self.ispeed * KMH_TO_MPH,
             'average': self.aspeed,
+            'average_mph': self.aspeed * KMH_TO_MPH,
             'gust': self.gust,
+            'gust_mph': self.gust * KMH_TO_MPH,
             'units': 'km/h'
         }
         

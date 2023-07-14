@@ -1,28 +1,60 @@
-import sys
+#!/usr/bin/python3 -u
+import json, os, sys, time
+import requests, socket
 from math import sin
-import time
 from datetime import datetime
-import socket
-import requests
 import MQTT
-import Display
-import BME280
+import paho.mqtt.client as mqtt
+BME280_ENABLED = False
+if BME280_ENABLED:
+    import BME280
+BME680_ENABLED = False
+if BME680_ENABLED:
+    import BME680
 import Rain
 import Wind
+import Sky
 
-# Display globals
-display = Display.Display()
-my_font = display.font24
-line_spacing = 26
+# TODO: add support for 1602 LCD
+DISPLAY_ENABLED = False
+WUNDERGROUND_ENABLED = False
 
-# MQTT clients
-station_name = 'CastleWeather'
-ws_location = '37.014835,-121.979731'
-topic_data = 'weather/data'
-mqtt_data = MQTT.MQTTClient(station_name, ws_location, topic_data, '192.168.0.105', 1883)
-topic_status = 'weather/status'
-mqtt_status = MQTT.MQTTClient(station_name+'_Status', ws_location, topic_status, '192.168.0.105', 1883)
+if DISPLAY_ENABLED:
+    import Display
+    # Display globals
+    display = Display.Display()
+    my_font = display.font24
+    line_spacing = 26
 
+# MQTT configuration
+station_name = os.environ.get('WEATHERSTATION_NAME', 'CastleWeather')
+ws_location = os.environ.get('WEATHERSTATION_LOCATION', '37.014835,-121.979731')
+mq_host = os.environ.get('WEATHERSTATION_MQ_HOST', '192.168.0.105')
+mq_port = int(os.environ.get('WEATHERSTATION_MQ_PORT', 1883))
+mq_username = os.environ.get('WEATHERSTATION_MQ_USERNAME')
+mq_password = os.environ.get('WEATHERSTATION_MQ_PASSWORD')
+mq_topic_base = os.environ.get('WEATHERSTATION_MQ_TOPIC_BASE', 'weather')
+
+# original MQTT client
+topic_data = os.environ.get('WEATHERSTATION_TOPIC_DATA', "{}/data".format(mq_topic_base))
+mqtt_data = MQTT.MQTTClient(station_name, ws_location, topic_data, mq_host, mq_port, mq_username, mq_password)
+topic_status = os.environ.get('WEATHERSTATION_TOPIC_STATUS', "{}/status".format(mq_topic_base))
+mqtt_status = MQTT.MQTTClient(station_name+'_Status', ws_location, topic_status, mq_host, mq_port, mq_username, mq_password)
+
+# other MQTT client
+def on_connect(client, userdata, flags, rc):
+    print("MQTT connect rc:" + str(rc))
+def on_publish(client, userdata, mid):
+    print("MQTT publish: mid={}".format(mid))
+mq_client = mqtt.Client(station_name)
+# mq_client.on_connect = on_connect
+# mq_client.on_publish = on_publish
+mq_client.connect(mq_host, mq_port, 60)
+if mq_port == 8883:
+    mq_client.tls_set()
+if mq_username is not None and mq_password is not None:
+    mq_client.username_pw_set(mq_username, password=mq_password)
+mq_client.loop_start()
 
 # Retreives our IP address
 ip_host = ''
@@ -120,6 +152,7 @@ def report_wind(speed, direction, payload):
     wind_data = {
         'wind': {
             'direction': direction.get_wind_direction()[1],
+            'direction_deg': direction.get_wind_direction()[0],
         }
     }
     wind_data['wind'].update(speed_data)
@@ -129,6 +162,10 @@ def report_rain(rain, since, payload):
     interval = since.split('/')[1]
     rpt = rain.get_recent(since)
     payload.update({'rain_'+interval: rpt['rain']})
+
+def report_sky(sky, payload):
+    payload.update({'sky':sky})
+
 
 def text_degrees(v):
     return {
@@ -168,7 +205,7 @@ def get_payload_value(payload, source, conversion):
 
 def send_wunderground_data(payload):
     WUurl = "https://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?"
-    WU_creds = 'ID=XXXXXXXXXXXX&PASSWORD=XXXXXXXX'
+    WU_creds = os.environ.get('WEATHERSTATION_WUNDERGROUND_CREDS', 'ID=XXXXXXXXXXXX&PASSWORD=XXXXXXXX')
     date_str = "&dateutc=now"
     action_str = "&action=updateraw"
 
@@ -195,12 +232,24 @@ def send_wunderground_data(payload):
     except:
         print("Unable to send info at this time.")
 
+def mq_publish(payload):
+    mq_client.publish("{}/wind_direction_deg".format(mq_topic_base), payload=payload['wind']['direction_deg'])
+    mq_client.publish("{}/wind_speed_kmh".format(mq_topic_base), payload=payload['wind']['speed'])
+    mq_client.publish("{}/wind_speed_avg_kmh".format(mq_topic_base), payload=payload['wind']['average'])
+    mq_client.publish("{}/wind_speed_gust_kmh".format(mq_topic_base), payload=payload['wind']['gust'])
+    mq_client.publish("{}/wind_speed_mph".format(mq_topic_base), payload=payload['wind']['speed_mph'])
+    mq_client.publish("{}/wind_speed_avg_mph".format(mq_topic_base), payload=payload['wind']['average_mph'])
+    mq_client.publish("{}/wind_speed_gust_mph".format(mq_topic_base), payload=payload['wind']['gust_mph'])
+    mq_client.publish("{}/rain_in_hr".format(mq_topic_base), payload=payload['rain_hr']['measurement'])
+    mq_client.publish("{}/rain_in_day".format(mq_topic_base), payload=payload['rain_day']['measurement'])
+    mq_client.publish("{}/readings_json".format(mq_topic_base), payload=json.dumps(payload))
 
 # Boot section
 
 host = get_ip()
 
-boot_message(display, ' Booting...')
+if DISPLAY_ENABLED:
+    boot_message(display, ' Booting...')
 publish_status({
     station_name: {
         'status': 'Bootstrap',
@@ -208,10 +257,14 @@ publish_status({
     }
 })
 
-thp = BME280.BME280Monitor()
+if BME280_ENABLED:
+    thp = BME280.BME280Monitor()
+if BME680_ENABLED:
+    thp = BME680.BME680Monitor()
 wind_speed = Wind.WindSpeed()
 wind_direction = Wind.WindDirection()
 rain = Rain.RainGauge()
+sky = Sky.Sky()
 
 publish_status({
     station_name: {
@@ -219,7 +272,8 @@ publish_status({
         'hostname': host
     }
 })
-boot_message(display, ' Online')
+if DISPLAY_ENABLED:
+    boot_message(display, ' Online')
 
 
 # Online
@@ -228,25 +282,35 @@ while True:
     # MQTT report every 10s
     time.sleep(10)
     payload = {}
-    report_tbp(thp, payload)
+    if BME280_ENABLED or BME680_ENABLED:
+        report_tbp(thp, payload)
     report_wind(wind_speed, wind_direction, payload)
     report_rain(rain, Rain.RAIN_HOUR, payload)
     report_rain(rain, Rain.RAIN_DAY, payload)
-    publish_data(payload)
+    report_sky(sky, payload)
+    # pprint for testing
+    # import pprint
+    # pp = pprint.PrettyPrinter(indent=2)
+    # pp.pprint(payload)
+    mq_publish(payload)
+    # publish_data(payload)
 
     # Update display every minute
     if count % 6 == 0:
-        temp = c_f(float(payload['temperature']['measurement']))
-        hum = float(payload['humidity']['measurement'])
-        bp = hpa_inhg(float(payload['pressure']['measurement']))
+        if BME280_ENABLED:
+            temp = c_f(float(payload['temperature']['measurement']))
+            hum = float(payload['humidity']['measurement'])
+            bp = hpa_inhg(float(payload['pressure']['measurement']))
         wind = payload['wind']['direction']
         speed = kmh_mph(float(payload['wind']['average']))
         gust = kmh_mph(float(payload['wind']['gust']))
         precip = float(payload['rain_day']['measurement'])
-        display_update(display, temp, hum, bp, wind, speed, gust, precip)
+        if DISPLAY_ENABLED:
+            display_update(display, temp, hum, bp, wind, speed, gust, precip)
 
     # Report to Weather Underground every 10 minutes
     if count % 60 == 0:
-        send_wunderground_data(payload)
+        if WUNDERGROUND_ENABLED:
+            send_wunderground_data(payload)
 
     count += 1
